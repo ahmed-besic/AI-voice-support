@@ -6,12 +6,16 @@ A self-hostable support voicebot with:
 - embeddable widget
 - Next.js demo site and operator console
 
-## Screenshots
+This project is meant for teams that want to run their own customer support assistant on their own infrastructure, keep the Gemini API key on the backend, and embed a support widget into their product site without building the whole realtime stack from scratch. The included demo app works as both a reference integration and a local operator/config console for tuning prompts, modes, limits, knowledge, and widget appearance.
+
 ![Demo site](public/demo-home.png)
+*The demo landing page shows the reference host site and the overall product framing for the embeddable support experience.*
 
 ![Admin settings console](public/admin-settings.png)
+*The admin console is where self-hosters configure allowed origins, widget behavior, prompt controls, limits, models, and knowledge.*
 
 ![Open widget](public/widget-open.png)
+*The widget UI is the embeddable customer-facing support surface, with voice and text flows driven by backend settings.*
 
 ## Workspace
 - `apps/demo`: sample site and operator console
