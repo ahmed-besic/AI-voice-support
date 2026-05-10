@@ -31,6 +31,7 @@ from .repository import (
     list_recent_sessions,
     list_site_summaries,
     mark_session_state,
+    prune_stale_sessions,
     replace_site_knowledge,
     seed_demo_site,
     update_site_settings,
@@ -82,6 +83,7 @@ async def startup() -> None:
     await init_db()
     async for db in get_db_session():
         await seed_demo_site(db, settings)
+        await prune_stale_sessions(db)
         break
 
 
@@ -198,13 +200,6 @@ async def widget_bootstrap(
     widget_settings = get_site_widget_settings(site)
     behavior_settings = get_site_behavior_settings(site)
     allowed_adapter_names = filter_allowed_tools(site.enabled_adapters, policy)
-    if await get_active_session_count(db, site.id) >= site.max_concurrent_sessions:
-        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail='Concurrent session limit reached')
-    if await get_daily_session_count(db, site.id) >= site.daily_session_limit:
-        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail='Daily session limit reached')
-    if await get_monthly_estimated_cost(db, site.id) >= site.monthly_usage_budget:
-        raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail='Monthly budget reached')
-
     api_key = decrypt_secret(site.google_api_key_encrypted) or settings.default_google_api_key
     default_mode = widget_settings.get('defaultMode', 'voice')
     voice_enabled = bool(widget_settings.get('voiceEnabled', True))
@@ -219,6 +214,13 @@ async def widget_bootstrap(
         requested_mode = 'text'
     if requested_mode == 'text' and not text_enabled:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Text mode is disabled for this site')
+
+    if requested_mode == 'voice' and await get_active_session_count(db, site.id) >= site.max_concurrent_sessions:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail='Concurrent session limit reached')
+    if await get_daily_session_count(db, site.id) >= site.daily_session_limit:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail='Daily session limit reached')
+    if await get_monthly_estimated_cost(db, site.id) >= site.monthly_usage_budget:
+        raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail='Monthly budget reached')
 
     if requested_mode == 'text':
         ephemeral_token = 'text-only-session'
@@ -246,22 +248,6 @@ async def widget_bootstrap(
         mode=requested_mode,
         customer_identity=bootstrap.customer.model_dump() if bootstrap.customer else None,
     )
-
-
-@app.get('/widget/sites/{site_id}/settings', response_model=WidgetPublicConfig)
-async def widget_public_settings(
-    site_id: str,
-    request: Request,
-    db: AsyncSession = Depends(get_db_session),
-) -> WidgetPublicConfig:
-    site = await get_site(db, site_id)
-    if not site:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Unknown site')
-    try:
-        validate_origin(request.headers.get('origin'), site.allowed_origins)
-    except AuthError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
-    return build_widget_public_config(site)
     session_jwt = create_session_jwt(
         session_id=session.id,
         site_id=site.id,
@@ -291,6 +277,22 @@ async def widget_public_settings(
             countdownWarningSeconds=widget_settings.get('countdownWarningSeconds', 60),
         ),
     )
+
+
+@app.get('/widget/sites/{site_id}/settings', response_model=WidgetPublicConfig)
+async def widget_public_settings(
+    site_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+) -> WidgetPublicConfig:
+    site = await get_site(db, site_id)
+    if not site:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Unknown site')
+    try:
+        validate_origin(request.headers.get('origin'), site.allowed_origins)
+    except AuthError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    return build_widget_public_config(site)
 
 
 @app.post('/widget/tools/execute', response_model=ToolExecutionResponse)

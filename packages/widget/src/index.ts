@@ -402,6 +402,47 @@ export function initVoiceSupportWidget(options: WidgetInitOptions) {
 		}).catch(() => undefined);
 	};
 
+	const readErrorDetail = async (response: Response) => {
+		try {
+			const body = await response.json();
+			if (
+				body &&
+				typeof body === "object" &&
+				"detail" in body &&
+				typeof body.detail === "string"
+			) {
+				return body.detail;
+			}
+		} catch {
+			// Ignore non-JSON error bodies.
+		}
+		return "";
+	};
+
+	const parsePolicyEvent = (rawEvent: unknown) => {
+		if (!rawEvent || typeof rawEvent !== "object") {
+			return null;
+		}
+		const candidate = rawEvent as Record<string, unknown>;
+		const normalized = {
+			...candidate,
+			message: candidate.message === null ? undefined : candidate.message,
+			classification:
+				candidate.classification === null
+					? undefined
+					: candidate.classification,
+			reasonCode:
+				candidate.reasonCode === null ? undefined : candidate.reasonCode,
+			reviewTag:
+				candidate.reviewTag === null ? undefined : candidate.reviewTag,
+		};
+		const parsed = policyControlEventSchema.safeParse(normalized);
+		if (!parsed.success) {
+			return null;
+		}
+		return parsed.data;
+	};
+
 	const sendUserTurnForModeration = async (
 		text: string,
 		source: "voice_input_transcription" | "text_input",
@@ -471,10 +512,16 @@ export function initVoiceSupportWidget(options: WidgetInitOptions) {
 		state.controlStream = eventSource;
 		const attach = (eventType: PolicyControlEvent["type"]) => {
 			eventSource.addEventListener(eventType, (event) => {
-				const payload = policyControlEventSchema.parse(
-					JSON.parse((event as MessageEvent<string>).data),
-				);
-				void handlePolicyEvent(payload);
+				try {
+					const payload = parsePolicyEvent(
+						JSON.parse((event as MessageEvent<string>).data),
+					);
+					if (payload) {
+						void handlePolicyEvent(payload);
+					}
+				} catch {
+					// Ignore malformed policy events instead of surfacing uncaught browser errors.
+				}
 			});
 		};
 		attach("policy_state");
@@ -777,7 +824,10 @@ export function initVoiceSupportWidget(options: WidgetInitOptions) {
 			},
 		);
 		if (!bootstrapResponse.ok) {
-			throw new Error(`Bootstrap failed: ${bootstrapResponse.status}`);
+			const detail = await readErrorDetail(bootstrapResponse);
+			throw new Error(
+				`Bootstrap failed: ${bootstrapResponse.status}${detail ? ` ${detail}` : ""}`,
+			);
 		}
 		const config: WidgetSessionConfig = widgetSessionConfigSchema.parse(
 			await bootstrapResponse.json(),
@@ -888,7 +938,10 @@ export function initVoiceSupportWidget(options: WidgetInitOptions) {
 			},
 		);
 		if (!bootstrapResponse.ok) {
-			throw new Error(`Text bootstrap failed: ${bootstrapResponse.status}`);
+			const detail = await readErrorDetail(bootstrapResponse);
+			throw new Error(
+				`Text bootstrap failed: ${bootstrapResponse.status}${detail ? ` ${detail}` : ""}`,
+			);
 		}
 		const config: WidgetSessionConfig = widgetSessionConfigSchema.parse(
 			await bootstrapResponse.json(),
@@ -938,8 +991,10 @@ export function initVoiceSupportWidget(options: WidgetInitOptions) {
 		finalizeDraftMessage(ROLE_ASSISTANT);
 		appendMessage("assistant", payload.text);
 		if (payload.policyEvent) {
-			const policyEvent = policyControlEventSchema.parse(payload.policyEvent);
-			await handlePolicyEvent(policyEvent);
+			const policyEvent = parsePolicyEvent(payload.policyEvent);
+			if (policyEvent) {
+				await handlePolicyEvent(policyEvent);
+			}
 		}
 	};
 
@@ -961,7 +1016,20 @@ export function initVoiceSupportWidget(options: WidgetInitOptions) {
 				statusText: "Text fallback active",
 				warning: reason !== "fallback_to_text",
 			});
-			await ensureTextSession();
+			try {
+				await ensureTextSession();
+			} catch (error) {
+				const detail =
+					error instanceof Error
+						? error.message
+						: "Text fallback could not start";
+				appendMessage(
+					"system",
+					"Voice mode ended, but text fallback could not start. Please try again in a moment.",
+				);
+				setStatus(`Fallback unavailable: ${detail}`, true);
+				throw error;
+			}
 			await sendWidgetEvent({
 				type: "session_end",
 				payload: { sessionId: state.sessionId, reason },
@@ -993,7 +1061,11 @@ export function initVoiceSupportWidget(options: WidgetInitOptions) {
 				setStatus(`Voice unavailable: ${detail}`, true);
 				setVoiceUiState("idle");
 				if (state.textEnabled) {
-					await fallbackToText("fallback_to_text");
+					try {
+						await fallbackToText("fallback_to_text");
+					} catch {
+						// The fallback path already updates the UI with a clear message.
+					}
 				}
 			}
 		};

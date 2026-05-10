@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import and_, desc, func, select
+from sqlalchemy import and_, delete, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .costs import clamp_session_duration, estimate_session_cost
@@ -76,6 +76,25 @@ async def seed_demo_site(db: AsyncSession, settings) -> None:
         site_id=settings.demo_site_id,
         entries=load_seed_faq_entries(),
     )
+
+
+async def prune_stale_sessions(db: AsyncSession, *, site_id: str | None = None) -> int:
+    now = datetime.now(timezone.utc)
+    ended_before = now - timedelta(minutes=15)
+    conditions = [
+        or_(
+            VoiceSession.expires_at <= now,
+            and_(
+                VoiceSession.status.in_(['completed', 'closed', 'error', 'fallback_text']),
+                VoiceSession.updated_at <= ended_before,
+            ),
+        )
+    ]
+    if site_id:
+        conditions.append(VoiceSession.site_id == site_id)
+    result = await db.execute(delete(VoiceSession).where(and_(*conditions)))
+    await db.commit()
+    return int(result.rowcount or 0)
 
 
 def load_seed_faq_entries() -> list[dict]:
@@ -165,6 +184,7 @@ async def seed_site_knowledge_from_entries(db: AsyncSession, *, site_id: str, en
 
 
 async def get_active_session_count(db: AsyncSession, site_id: str) -> int:
+    await prune_stale_sessions(db, site_id=site_id)
     now = datetime.now(timezone.utc)
     result = await db.scalar(
         select(func.count()).select_from(VoiceSession).where(

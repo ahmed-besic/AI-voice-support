@@ -134,13 +134,13 @@ export type WidgetEvent = z.infer<typeof widgetEventSchema>;
 
 export const policyControlEventSchema = z.object({
   type: z.enum(['policy_state', 'policy_warning', 'policy_strike', 'policy_terminated']),
-  message: z.string().optional(),
+  message: z.string().nullable().optional(),
   currentStrikeCount: z.number().int().nonnegative().default(0),
   maxStrikes: z.number().int().positive().default(3),
   terminated: z.boolean().default(false),
-  classification: z.enum(['IN_SCOPE', 'OUT_OF_SCOPE', 'AMBIGUOUS']).optional(),
-  reasonCode: z.string().optional(),
-  reviewTag: z.string().optional(),
+  classification: z.enum(['IN_SCOPE', 'OUT_OF_SCOPE', 'AMBIGUOUS']).nullable().optional(),
+  reasonCode: z.string().nullable().optional(),
+  reviewTag: z.string().nullable().optional(),
 });
 export type PolicyControlEvent = z.infer<typeof policyControlEventSchema>;
 

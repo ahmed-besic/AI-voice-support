@@ -49,7 +49,6 @@ async def classify_user_intent(
         options={
             'model': model,
             'api_key': api_key,
-            'temperature': 0,
         },
     )
     registry.set_primary('PolicyClient')

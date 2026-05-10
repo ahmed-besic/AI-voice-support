@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -12,9 +12,9 @@ class CustomerIdentity(BaseModel):
 
 
 class VoiceSessionBootstrap(BaseModel):
-    site_id: str = Field(alias='siteId')
-    requested_mode: Literal['voice', 'text'] = Field(default='voice', alias='requestedMode')
-    widget_version: str = Field(alias='widgetVersion')
+    site_id: Annotated[str, Field(alias='siteId')]
+    requested_mode: Annotated[Literal['voice', 'text'], Field(alias='requestedMode')] = 'voice'
+    widget_version: Annotated[str, Field(alias='widgetVersion')]
     customer: CustomerIdentity | None = None
 
 
