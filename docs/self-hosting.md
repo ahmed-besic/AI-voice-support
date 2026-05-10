@@ -6,6 +6,11 @@
 - Docker for local Postgres
 - A Google API key stored on the backend
 
+## Important admin security note
+- The v1 admin/settings endpoints are intentionally unauthenticated.
+- They are for trusted local or private self-hosted deployments only.
+- Do not expose port `8000` publicly unless you add real auth or restrict network access in front of the API.
+
 ## Boot sequence
 1. Start Postgres with `docker compose up -d`.
 2. Copy `services/api/.env.example` to `services/api/.env` and fill in:
@@ -17,6 +22,14 @@
 5. Create the Python env and install backend deps.
 6. Run `uvicorn app.main:app --reload --app-dir services/api`.
 7. Run `npm run dev:demo`.
+
+## Settings workflow
+- The demo app now includes the default config console at `/admin`.
+- Runtime settings are stored in the backend database.
+- `services/api/config/site.json` is the seed/import-export format for OSS users who prefer file editing.
+- Editing `site.json` requires a backend restart or importing the JSON through the admin console.
+- Settings saved in the UI take effect immediately for new sessions.
+- The UI shows only whether `DEFAULT_GOOGLE_API_KEY` is configured; the key value is never exposed.
 
 ## CSP and CORS
 For a third-party website embed, allow:

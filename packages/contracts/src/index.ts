@@ -42,6 +42,10 @@ export const widgetSessionConfigSchema = z.object({
   enabledTools: z.array(toolDescriptorSchema),
   textFallbackModel: z.string().min(1),
   textFallbackEnabled: z.boolean().default(true),
+  defaultMode: requestedModeSchema.default('voice'),
+  voiceEnabled: z.boolean().default(true),
+  textEnabled: z.boolean().default(true),
+  theme: z.enum(['graphite', 'sand', 'ocean']).default('graphite'),
   vadConfig: vadConfigSchema,
   strictBehaviorEnabled: z.boolean().default(true),
   controlStreamUrl: z.string().min(1),
@@ -56,6 +60,21 @@ export const widgetSessionConfigSchema = z.object({
   }),
 });
 export type WidgetSessionConfig = z.infer<typeof widgetSessionConfigSchema>;
+
+export const widgetPublicConfigSchema = z.object({
+  defaultMode: requestedModeSchema.default('voice'),
+  voiceEnabled: z.boolean().default(true),
+  textEnabled: z.boolean().default(true),
+  theme: z.enum(['graphite', 'sand', 'ocean']).default('graphite'),
+  strictBehaviorEnabled: z.boolean().default(true),
+  ui: z.object({
+    title: z.string().default('Support assistant'),
+    welcomeMessage: z.string().default('How can I help you today?'),
+    countdownWarningSeconds: z.number().int().min(10).default(60),
+  }),
+  vadConfig: vadConfigSchema,
+});
+export type WidgetPublicConfig = z.infer<typeof widgetPublicConfigSchema>;
 
 export const toolExecutionRequestSchema = z.object({
   sessionId: z.string().uuid(),

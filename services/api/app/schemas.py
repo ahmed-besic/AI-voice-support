@@ -37,6 +37,16 @@ class WidgetSessionUI(BaseModel):
     countdown_warning_seconds: int = Field(default=60, alias='countdownWarningSeconds')
 
 
+class WidgetPublicConfig(BaseModel):
+    default_mode: Literal['voice', 'text'] = Field(default='voice', alias='defaultMode')
+    voice_enabled: bool = Field(default=True, alias='voiceEnabled')
+    text_enabled: bool = Field(default=True, alias='textEnabled')
+    theme: str = 'graphite'
+    strict_behavior_enabled: bool = Field(default=True, alias='strictBehaviorEnabled')
+    vad_config: VADConfig = Field(alias='vadConfig')
+    ui: WidgetSessionUI
+
+
 class WidgetSessionConfig(BaseModel):
     session_id: str = Field(alias='sessionId')
     session_jwt: str = Field(alias='sessionJwt')
@@ -46,6 +56,10 @@ class WidgetSessionConfig(BaseModel):
     enabled_tools: list[ToolDescriptor] = Field(alias='enabledTools')
     text_fallback_model: str = Field(alias='textFallbackModel')
     text_fallback_enabled: bool = Field(default=True, alias='textFallbackEnabled')
+    default_mode: Literal['voice', 'text'] = Field(default='voice', alias='defaultMode')
+    voice_enabled: bool = Field(default=True, alias='voiceEnabled')
+    text_enabled: bool = Field(default=True, alias='textEnabled')
+    theme: str = 'graphite'
     vad_config: VADConfig = Field(alias='vadConfig')
     strict_behavior_enabled: bool = Field(default=True, alias='strictBehaviorEnabled')
     control_stream_url: str = Field(alias='controlStreamUrl')

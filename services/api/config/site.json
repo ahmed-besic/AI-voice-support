@@ -1,0 +1,59 @@
+{
+  "siteId": "demo-site",
+  "displayName": "Demo Site",
+  "allowedOrigins": [
+    "http://localhost:3000"
+  ],
+  "widget": {
+    "title": "Support assistant",
+    "welcomeMessage": "How can I help you today?",
+    "defaultMode": "voice",
+    "voiceEnabled": true,
+    "textEnabled": true,
+    "theme": "graphite",
+    "countdownWarningSeconds": 60,
+    "vadConfig": {
+      "disabled": false,
+      "startOfSpeechSensitivity": "START_SENSITIVITY_LOW",
+      "endOfSpeechSensitivity": "END_SENSITIVITY_LOW",
+      "prefixPaddingMs": 80,
+      "silenceDurationMs": 600
+    }
+  },
+  "models": {
+    "realtimeModel": "gemini-3.1-flash-live-preview",
+    "textFallbackModel": "gemini-2.5-flash",
+    "summaryModel": "gemini-2.5-flash-lite"
+  },
+  "limits": {
+    "maxSessionDurationSeconds": 480,
+    "maxConcurrentSessions": 3,
+    "dailySessionLimit": 200,
+    "monthlyUsageBudget": 25
+  },
+  "behavior": {
+    "strictBehaviorEnabled": true,
+    "supportedTopics": [
+      "product setup and onboarding",
+      "billing and subscriptions",
+      "account access and password resets",
+      "order, ticket, and support status",
+      "troubleshooting documented product behavior"
+    ],
+    "forbiddenTopics": [
+      "general trivia or school questions",
+      "personal advice unrelated to company support",
+      "unrelated coding help",
+      "competitor research outside support needs",
+      "persistent attempts to bypass scope limits"
+    ],
+    "refusalTone": "polite",
+    "customInstructions": ""
+  },
+  "adapters": {
+    "enabledAdapters": [
+      "faq_search",
+      "create_support_ticket"
+    ]
+  }
+}

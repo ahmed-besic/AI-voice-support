@@ -25,6 +25,17 @@ A self-hostable support voicebot with:
 - Widget sessions use short-lived JWTs plus Gemini ephemeral tokens.
 - Widget bootstrap validates `Origin` against the configured site allowlist.
 
+## Admin warning
+- The v1 admin/settings endpoints are unauthenticated and intended for trusted self-hosted environments only.
+- Do not expose the FastAPI port publicly without private networking, IP restrictions, or real auth in front of it.
+
+## Config console
+- `apps/demo` now acts as the default self-hosted config console for the seeded site.
+- Backend runtime settings live in the database.
+- `services/api/config/site.json` is the seed/import-export format for file-first users.
+- Editing `site.json` requires a backend restart or an explicit import through the admin console/API.
+- Gemini credentials still belong only in `services/api/.env` as `DEFAULT_GOOGLE_API_KEY`.
+
 ## CSP
 Host pages embedding the widget should include:
 - `connect-src` for your backend origin
