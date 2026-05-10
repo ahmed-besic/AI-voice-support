@@ -1,0 +1,17 @@
+node_modules
+.next
+dist
+coverage
+*.tsbuildinfo
+__pycache__
+.pytest_cache
+*.pyc
+.pi-lens
+.env
+.env.*
+!.env.example
+!.env.local.example
+!.env.*.example
+.DS_Store
+venv
+.venv

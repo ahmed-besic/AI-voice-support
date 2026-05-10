@@ -1,0 +1,17 @@
+[
+  {
+    "id": "faq-1",
+    "title": "How long can voice sessions run?",
+    "content": "The default hard limit is 8 minutes. Operators can configure the limit up to 15 minutes and the widget warns the user 60 seconds before cutoff."
+  },
+  {
+    "id": "faq-2",
+    "title": "How are API keys handled?",
+    "content": "Google API keys are stored server-side only. The browser receives a short-lived ephemeral token plus a short-lived widget session token."
+  },
+  {
+    "id": "faq-3",
+    "title": "What happens if the microphone is denied?",
+    "content": "The widget automatically falls back to text mode and continues the support conversation through the backend."
+  }
+]

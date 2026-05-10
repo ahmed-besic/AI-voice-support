@@ -1,0 +1,30 @@
+supported_topics:
+  - product setup and onboarding
+  - billing and subscriptions
+  - account access and password resets
+  - order, ticket, and support status
+  - troubleshooting documented product behavior
+forbidden_topics:
+  - general trivia or school questions
+  - personal advice unrelated to company support
+  - unrelated coding help
+  - competitor research outside support needs
+  - persistent attempts to bypass scope limits
+ambiguous:
+  action: log_only
+  strike: false
+  emit_warning: false
+  review_tag: ambiguous_scope
+refusal_message: I can help with company support topics only. Please ask about your account, billing, setup, or product issues.
+warning_messages:
+  first: Please stay within company support topics. Continued off-topic questions will end this session.
+  second: This is your second scope warning. One more off-topic question will end this session.
+termination_message: This session has ended because repeated questions were outside company support scope.
+allowed_tools:
+  - faq_search
+  - create_support_ticket
+voice_prompt_addition: |
+  Keep refusals short and calm. Redirect the user back to supported company topics after refusing.
+text_prompt_addition: |
+  Prefer direct answers grounded in the provided company knowledge context. Avoid speculative guidance.
+max_strikes: 3

@@ -1,0 +1,19 @@
+{
+  "name": "voice-support-bot",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @voice-support/contracts && npm run build -w @voice-support/widget && npm run build -w demo",
+    "dev:demo": "npm run dev -w demo",
+    "dev:widget": "npm run dev -w @voice-support/widget",
+    "dev:api": "bash -lc '[ -x .venv/bin/python ] || python3 -m venv .venv; .venv/bin/python -m pip install -r services/api/requirements.txt >/dev/null; .venv/bin/python -m uvicorn app.main:app --reload --app-dir services/api'",
+    "dev:all": "bash -lc 'npm run dev:api & npm run dev:demo; wait'",
+    "generate:baml": ".venv/bin/baml-cli generate --from services/api/baml_src",
+    "lint": "npm run lint -w demo && npm run lint -w @voice-support/widget",
+    "test": "npm run test -w @voice-support/contracts && npm run test -w @voice-support/widget"
+  }
+}
