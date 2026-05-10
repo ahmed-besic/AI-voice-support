@@ -6,6 +6,13 @@ A self-hostable support voicebot with:
 - embeddable widget
 - Next.js demo site and operator console
 
+## Screenshots
+![Demo site](public/demo-home.png)
+
+![Admin settings console](public/admin-settings.png)
+
+![Open widget](public/widget-open.png)
+
 ## Workspace
 - `apps/demo`: sample site and operator console
 - `packages/contracts`: shared schemas and types
