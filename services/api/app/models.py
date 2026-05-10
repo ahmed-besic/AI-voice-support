@@ -30,6 +30,7 @@ class Site(Base):
     realtime_model: Mapped[str] = mapped_column(String(255), default='gemini-3.1-flash-live-preview')
     vad_preset: Mapped[dict] = mapped_column(JSON, default=dict)
     enabled_adapters: Mapped[list] = mapped_column(JSON, default=list)
+    site_config: Mapped[dict] = mapped_column(JSON, default=dict)
     google_api_key_encrypted: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     input_token_price_per_1k: Mapped[float] = mapped_column(Float, default=0.0)
     output_token_price_per_1k: Mapped[float] = mapped_column(Float, default=0.0)

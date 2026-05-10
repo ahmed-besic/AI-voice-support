@@ -13,13 +13,15 @@ import {
 	userTurnRequestSchema,
 	userTurnResponseSchema,
 	voiceSessionBootstrapSchema,
+	type WidgetPublicConfig,
+	type WidgetSessionConfig,
+	widgetPublicConfigSchema,
 	widgetSessionConfigSchema,
 	widgetEventSchema,
 } from "@voice-support/contracts";
 import { AudioPlaybackQueue, MicStreamer } from "./audio";
 import {
 	applyThemeVariables,
-	THEME_ORDER,
 	type WidgetThemeName,
 } from "./themes";
 import { collectInlineAudioParts, formatRemaining } from "./utils";
@@ -81,6 +83,10 @@ type WidgetState = {
 	voiceState: VoiceUiState;
 	voiceControlVersion: number;
 	theme: WidgetThemeName;
+	defaultMode: "voice" | "text";
+	voiceEnabled: boolean;
+	textEnabled: boolean;
+	countdownWarningSeconds: number;
 	controlStream: EventSource | null;
 	inputsLocked: boolean;
 	strictBehaviorEnabled: boolean;
@@ -176,12 +182,7 @@ export function initVoiceSupportWidget(options: WidgetInitOptions) {
 		voiceButton.dataset.action = "voice";
 		voiceButton.type = "button";
 		voiceButton.textContent = "Start voice";
-		const themeButton = document.createElement("button");
-		themeButton.className = "voice-support-btn";
-		themeButton.dataset.action = "theme";
-		themeButton.type = "button";
-		themeButton.textContent = "Theme";
-		controls.append(voiceButton, themeButton);
+		controls.append(voiceButton);
 
 	const textForm = document.createElement("form");
 	textForm.className = "voice-support-input";
@@ -229,6 +230,10 @@ export function initVoiceSupportWidget(options: WidgetInitOptions) {
 		voiceState: "idle",
 		voiceControlVersion: 0,
 		theme: options.theme ?? "graphite",
+		defaultMode: "voice",
+		voiceEnabled: true,
+		textEnabled: true,
+		countdownWarningSeconds: 60,
 		controlStream: null,
 		inputsLocked: false,
 		strictBehaviorEnabled: true,
@@ -247,6 +252,13 @@ export function initVoiceSupportWidget(options: WidgetInitOptions) {
 
 	const setVoiceUiState = (voiceState: VoiceUiState) => {
 		state.voiceState = voiceState;
+		if (!state.voiceEnabled) {
+			voiceButton.textContent = "Voice off";
+			voiceButton.disabled = true;
+			voiceButton.hidden = true;
+			return;
+		}
+		voiceButton.hidden = false;
 		if (state.inputsLocked) {
 			voiceButton.textContent = "Locked";
 			voiceButton.disabled = true;
@@ -268,8 +280,9 @@ export function initVoiceSupportWidget(options: WidgetInitOptions) {
 
 	const setInputsLocked = (locked: boolean) => {
 		state.inputsLocked = locked;
-		textInput.disabled = locked;
-		sendButton.disabled = locked;
+		textInput.disabled = locked || !state.textEnabled;
+		sendButton.disabled = locked || !state.textEnabled;
+		textForm.hidden = !state.textEnabled;
 		if (locked) {
 			voiceButton.textContent = "Locked";
 			voiceButton.disabled = true;
@@ -282,12 +295,6 @@ export function initVoiceSupportWidget(options: WidgetInitOptions) {
 		state.theme = themeName;
 		applyThemeVariables(wrapper, themeName);
 		wrapper.dataset.theme = themeName;
-	};
-
-	const cycleTheme = () => {
-		const currentIndex = THEME_ORDER.indexOf(state.theme);
-		const nextTheme = THEME_ORDER[(currentIndex + 1) % THEME_ORDER.length];
-		applyTheme(nextTheme);
 	};
 
 	const closeControlStream = () => {
@@ -395,6 +402,47 @@ export function initVoiceSupportWidget(options: WidgetInitOptions) {
 		}).catch(() => undefined);
 	};
 
+	const readErrorDetail = async (response: Response) => {
+		try {
+			const body = await response.json();
+			if (
+				body &&
+				typeof body === "object" &&
+				"detail" in body &&
+				typeof body.detail === "string"
+			) {
+				return body.detail;
+			}
+		} catch {
+			// Ignore non-JSON error bodies.
+		}
+		return "";
+	};
+
+	const parsePolicyEvent = (rawEvent: unknown) => {
+		if (!rawEvent || typeof rawEvent !== "object") {
+			return null;
+		}
+		const candidate = rawEvent as Record<string, unknown>;
+		const normalized = {
+			...candidate,
+			message: candidate.message === null ? undefined : candidate.message,
+			classification:
+				candidate.classification === null
+					? undefined
+					: candidate.classification,
+			reasonCode:
+				candidate.reasonCode === null ? undefined : candidate.reasonCode,
+			reviewTag:
+				candidate.reviewTag === null ? undefined : candidate.reviewTag,
+		};
+		const parsed = policyControlEventSchema.safeParse(normalized);
+		if (!parsed.success) {
+			return null;
+		}
+		return parsed.data;
+	};
+
 	const sendUserTurnForModeration = async (
 		text: string,
 		source: "voice_input_transcription" | "text_input",
@@ -464,16 +512,77 @@ export function initVoiceSupportWidget(options: WidgetInitOptions) {
 		state.controlStream = eventSource;
 		const attach = (eventType: PolicyControlEvent["type"]) => {
 			eventSource.addEventListener(eventType, (event) => {
-				const payload = policyControlEventSchema.parse(
-					JSON.parse((event as MessageEvent<string>).data),
-				);
-				void handlePolicyEvent(payload);
+				try {
+					const payload = parsePolicyEvent(
+						JSON.parse((event as MessageEvent<string>).data),
+					);
+					if (payload) {
+						void handlePolicyEvent(payload);
+					}
+				} catch {
+					// Ignore malformed policy events instead of surfacing uncaught browser errors.
+				}
 			});
 		};
 		attach("policy_state");
 		attach("policy_warning");
 		attach("policy_strike");
 		attach("policy_terminated");
+	};
+
+	const applySessionConfig = (
+		config: Pick<
+			WidgetSessionConfig,
+			| "defaultMode"
+			| "voiceEnabled"
+			| "textEnabled"
+			| "strictBehaviorEnabled"
+			| "theme"
+			| "ui"
+		>,
+	) => {
+		state.defaultMode = config.defaultMode;
+		state.voiceEnabled = config.voiceEnabled;
+		state.textEnabled = config.textEnabled;
+		state.strictBehaviorEnabled = config.strictBehaviorEnabled;
+		state.countdownWarningSeconds = config.ui.countdownWarningSeconds;
+		if (!options.theme) {
+			applyTheme(config.theme);
+		}
+		if (!options.title) {
+			headerTitle.textContent = config.ui.title;
+		}
+		if (!options.welcomeMessage) {
+			headerSubtitle.textContent = config.ui.welcomeMessage;
+			const firstAssistant = log.querySelector(
+				".voice-support-msg.assistant",
+			) as HTMLDivElement | null;
+			if (firstAssistant && log.childElementCount === 1) {
+				firstAssistant.textContent = config.ui.welcomeMessage;
+			}
+		}
+		setInputsLocked(state.inputsLocked);
+		setVoiceUiState(state.voiceState);
+	};
+
+	const loadInitialConfig = async () => {
+		try {
+			const response = await fetch(
+				`${options.apiBaseUrl}/widget/sites/${options.siteId}/settings`,
+				{
+					method: "GET",
+				},
+			);
+			if (!response.ok) {
+				return;
+			}
+			const config: WidgetPublicConfig = widgetPublicConfigSchema.parse(
+				await response.json(),
+			);
+			applySessionConfig(config);
+		} catch {
+			// Leave the widget on its local defaults if the public config cannot be fetched.
+		}
 	};
 
 	const updateTimer = () => {
@@ -486,11 +595,14 @@ export function initVoiceSupportWidget(options: WidgetInitOptions) {
 			(state.sessionDeadlineMs - Date.now()) / 1000,
 		);
 		timerLabel.textContent = formatRemaining(remainingSeconds);
-		if (remainingSeconds <= 60 && !state.warningShown) {
+		if (
+			remainingSeconds <= state.countdownWarningSeconds &&
+			!state.warningShown
+		) {
 			state.warningShown = true;
 			appendMessage(
 				"system",
-				"Voice mode will switch to text in about 60 seconds unless the session ends first.",
+				`Voice mode will switch to text in about ${state.countdownWarningSeconds} seconds unless the session ends first.`,
 			);
 			setStatus("Session ending soon", true);
 		}
@@ -712,18 +824,24 @@ export function initVoiceSupportWidget(options: WidgetInitOptions) {
 			},
 		);
 		if (!bootstrapResponse.ok) {
-			throw new Error(`Bootstrap failed: ${bootstrapResponse.status}`);
+			const detail = await readErrorDetail(bootstrapResponse);
+			throw new Error(
+				`Bootstrap failed: ${bootstrapResponse.status}${detail ? ` ${detail}` : ""}`,
+			);
 		}
-		const config = widgetSessionConfigSchema.parse(
+		const config: WidgetSessionConfig = widgetSessionConfigSchema.parse(
 			await bootstrapResponse.json(),
 		);
 		state.sessionId = config.sessionId;
 		state.sessionJwt = config.sessionJwt;
-		state.strictBehaviorEnabled = config.strictBehaviorEnabled;
+		applySessionConfig(config);
 		setInputsLocked(false);
 		state.mode = "voice";
 		startCountdown(config.maxSessionDurationSeconds);
 		openControlStream(config.controlStreamUrl);
+		if (!config.voiceEnabled) {
+			throw new Error("Voice mode is disabled for this site");
+		}
 		await state.playback.initialize();
 		const ai = new GoogleGenAI({
 			apiKey: config.ephemeralToken,
@@ -820,15 +938,19 @@ export function initVoiceSupportWidget(options: WidgetInitOptions) {
 			},
 		);
 		if (!bootstrapResponse.ok) {
-			throw new Error(`Text bootstrap failed: ${bootstrapResponse.status}`);
+			const detail = await readErrorDetail(bootstrapResponse);
+			throw new Error(
+				`Text bootstrap failed: ${bootstrapResponse.status}${detail ? ` ${detail}` : ""}`,
+			);
 		}
-		const config = widgetSessionConfigSchema.parse(
+		const config: WidgetSessionConfig = widgetSessionConfigSchema.parse(
 			await bootstrapResponse.json(),
 		);
 		state.sessionId = config.sessionId;
 		state.sessionJwt = config.sessionJwt;
-		state.strictBehaviorEnabled = config.strictBehaviorEnabled;
+		applySessionConfig(config);
 		setInputsLocked(false);
+		state.mode = "text";
 		startCountdown(config.maxSessionDurationSeconds);
 	};
 
@@ -869,8 +991,10 @@ export function initVoiceSupportWidget(options: WidgetInitOptions) {
 		finalizeDraftMessage(ROLE_ASSISTANT);
 		appendMessage("assistant", payload.text);
 		if (payload.policyEvent) {
-			const policyEvent = policyControlEventSchema.parse(payload.policyEvent);
-			await handlePolicyEvent(policyEvent);
+			const policyEvent = parsePolicyEvent(payload.policyEvent);
+			if (policyEvent) {
+				await handlePolicyEvent(policyEvent);
+			}
 		}
 	};
 
@@ -880,11 +1004,32 @@ export function initVoiceSupportWidget(options: WidgetInitOptions) {
 			if (state.mode === "text") {
 				return;
 			}
+			if (!state.textEnabled) {
+				await stopVoiceSession({
+					statusText: "Voice session ended",
+					warning: reason !== "fallback_to_text",
+				});
+				appendMessage("system", "Text mode is disabled for this site.");
+				return;
+			}
 			await stopVoiceSession({
 				statusText: "Text fallback active",
 				warning: reason !== "fallback_to_text",
 			});
-			await ensureTextSession();
+			try {
+				await ensureTextSession();
+			} catch (error) {
+				const detail =
+					error instanceof Error
+						? error.message
+						: "Text fallback could not start";
+				appendMessage(
+					"system",
+					"Voice mode ended, but text fallback could not start. Please try again in a moment.",
+				);
+				setStatus(`Fallback unavailable: ${detail}`, true);
+				throw error;
+			}
 			await sendWidgetEvent({
 				type: "session_end",
 				payload: { sessionId: state.sessionId, reason },
@@ -909,11 +1054,19 @@ export function initVoiceSupportWidget(options: WidgetInitOptions) {
 						: "Unknown voice connection error";
 				appendMessage(
 					"system",
-					"Voice mode was unavailable, so the widget switched to text.",
+					state.textEnabled
+						? "Voice mode was unavailable, so the widget switched to text."
+						: "Voice mode was unavailable for this site.",
 				);
 				setStatus(`Voice unavailable: ${detail}`, true);
 				setVoiceUiState("idle");
-				await fallbackToText("fallback_to_text");
+				if (state.textEnabled) {
+					try {
+						await fallbackToText("fallback_to_text");
+					} catch {
+						// The fallback path already updates the UI with a clear message.
+					}
+				}
 			}
 		};
 
@@ -936,6 +1089,9 @@ export function initVoiceSupportWidget(options: WidgetInitOptions) {
 		panel
 			.querySelector('[data-action="voice"]')
 			?.addEventListener("click", () => {
+				if (!state.voiceEnabled) {
+					return;
+				}
 				if (state.voiceState === "active" || state.voiceState === "connecting") {
 					void stopVoiceSession({ statusText: "Voice stopped" });
 					return;
@@ -950,11 +1106,6 @@ export function initVoiceSupportWidget(options: WidgetInitOptions) {
 					statusText: "Ready",
 				});
 			});
-		panel
-			.querySelector('[data-action="theme"]')
-			?.addEventListener("click", () => {
-				cycleTheme();
-			});
 		toggleButton.addEventListener("click", () => {
 			if (!panel.hidden) {
 				void stopVoiceSession({
@@ -968,7 +1119,7 @@ export function initVoiceSupportWidget(options: WidgetInitOptions) {
 
 	textForm.addEventListener("submit", (event) => {
 		event.preventDefault();
-		if (state.inputsLocked) {
+		if (state.inputsLocked || !state.textEnabled) {
 			return;
 		}
 		const text = textInput.value.trim();
@@ -984,27 +1135,25 @@ export function initVoiceSupportWidget(options: WidgetInitOptions) {
 		});
 	});
 
-		appendMessage(
-			"assistant",
-			options.welcomeMessage ?? "How can I help you today?",
-		);
-		applyTheme(state.theme);
-		setStatus("Ready");
-		setVoiceUiState("idle");
+	appendMessage(
+		"assistant",
+		options.welcomeMessage ?? "How can I help you today?",
+	);
+	applyTheme(state.theme);
+	setStatus("Ready");
+	setVoiceUiState("idle");
+	void loadInitialConfig();
 
-		return {
-			destroy() {
-				void shutdown("user_closed");
-				wrapper.remove();
-			},
-			setTheme(theme: WidgetThemeName) {
-				applyTheme(theme);
-			},
-			cycleTheme() {
-				cycleTheme();
-			},
-			getTheme() {
-				return state.theme;
-			},
-		};
-	}
+	return {
+		destroy() {
+			void shutdown("user_closed");
+			wrapper.remove();
+		},
+		setTheme(theme: WidgetThemeName) {
+			applyTheme(theme);
+		},
+		getTheme() {
+			return state.theme;
+		},
+	};
+}

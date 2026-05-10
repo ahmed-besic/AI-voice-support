@@ -6,6 +6,17 @@ A self-hostable support voicebot with:
 - embeddable widget
 - Next.js demo site and operator console
 
+This project is meant for teams that want to run their own customer support assistant on their own infrastructure, keep the Gemini API key on the backend, and embed a support widget into their product site without building the whole realtime stack from scratch. The included demo app works as both a reference integration and a local operator/config console for tuning prompts, modes, limits, knowledge, and widget appearance.
+
+![Demo site](public/demo-home.png)
+*The demo landing page shows the reference host site and the overall product framing for the embeddable support experience.*
+
+![Admin settings console](public/admin-settings.png)
+*The admin console is where self-hosters configure allowed origins, widget behavior, prompt controls, limits, models, and knowledge.*
+
+![Open widget](public/widget-open.png)
+*The widget UI is the embeddable customer-facing support surface, with voice and text flows driven by backend settings.*
+
 ## Workspace
 - `apps/demo`: sample site and operator console
 - `packages/contracts`: shared schemas and types
@@ -24,6 +35,17 @@ A self-hostable support voicebot with:
 - Google API keys stay on the backend only.
 - Widget sessions use short-lived JWTs plus Gemini ephemeral tokens.
 - Widget bootstrap validates `Origin` against the configured site allowlist.
+
+## Admin warning
+- The v1 admin/settings endpoints are unauthenticated and intended for trusted self-hosted environments only.
+- Do not expose the FastAPI port publicly without private networking, IP restrictions, or real auth in front of it.
+
+## Config console
+- `apps/demo` now acts as the default self-hosted config console for the seeded site.
+- Backend runtime settings live in the database.
+- `services/api/config/site.json` is the seed/import-export format for file-first users.
+- Editing `site.json` requires a backend restart or an explicit import through the admin console/API.
+- Gemini credentials still belong only in `services/api/.env` as `DEFAULT_GOOGLE_API_KEY`.
 
 ## CSP
 Host pages embedding the widget should include:

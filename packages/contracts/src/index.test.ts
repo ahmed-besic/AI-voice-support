@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { voiceSessionBootstrapSchema, widgetSessionConfigSchema } from './index';
+import { voiceSessionBootstrapSchema, widgetPublicConfigSchema, widgetSessionConfigSchema } from './index';
 
 describe('contracts', () => {
   it('validates widget bootstrap payloads', () => {
@@ -22,6 +22,10 @@ describe('contracts', () => {
       enabledTools: [{ name: 'faq_search', description: 'Search FAQ' }],
       textFallbackModel: 'gemini-text',
       textFallbackEnabled: true,
+      defaultMode: 'text',
+      voiceEnabled: false,
+      textEnabled: true,
+      theme: 'sand',
       strictBehaviorEnabled: true,
       controlStreamUrl: 'http://localhost:8000/widget/sessions/demo/control-stream?token=token',
       strikePolicy: {
@@ -42,5 +46,30 @@ describe('contracts', () => {
       },
     });
     expect(parsed.enabledTools).toHaveLength(1);
+    expect(parsed.defaultMode).toBe('text');
+    expect(parsed.theme).toBe('sand');
+  });
+
+  it('validates public widget config payloads', () => {
+    const parsed = widgetPublicConfigSchema.parse({
+      defaultMode: 'voice',
+      voiceEnabled: true,
+      textEnabled: true,
+      theme: 'ocean',
+      strictBehaviorEnabled: true,
+      vadConfig: {
+        disabled: false,
+        startOfSpeechSensitivity: 'START_SENSITIVITY_LOW',
+        endOfSpeechSensitivity: 'END_SENSITIVITY_LOW',
+        prefixPaddingMs: 80,
+        silenceDurationMs: 600,
+      },
+      ui: {
+        title: 'Support assistant',
+        welcomeMessage: 'Hello',
+        countdownWarningSeconds: 60,
+      },
+    });
+    expect(parsed.theme).toBe('ocean');
   });
 });

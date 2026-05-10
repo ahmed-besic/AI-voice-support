@@ -15,6 +15,7 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.execute(text('CREATE EXTENSION IF NOT EXISTS vector'))
         await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(text("ALTER TABLE sites ADD COLUMN IF NOT EXISTS site_config JSON DEFAULT '{}'::json"))
 
 
 async def get_db_session() -> AsyncIterator[AsyncSession]:

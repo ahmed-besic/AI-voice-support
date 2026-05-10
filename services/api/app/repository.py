@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import and_, desc, func, select
+from sqlalchemy import and_, delete, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .costs import clamp_session_duration, estimate_session_cost
@@ -23,11 +23,19 @@ from .models import (
 )
 from .schemas import ConnectionStatePayload, SessionEndPayload, TranscriptPayload, UsagePayload
 from .security import encrypt_secret
+from .site_settings import (
+    ImportSiteSettingsRequest,
+    SiteConfigFile,
+    UpdateSiteSettingsRequest,
+    apply_config_to_site,
+    ensure_site_config_file,
+)
 
 FAQ_PATH = Path(__file__).resolve().parent.parent / 'data' / 'faq.json'
 
 
 async def seed_demo_site(db: AsyncSession, settings) -> None:
+    seed_config = ensure_site_config_file(settings)
     existing = await db.get(Site, settings.demo_site_id)
     if existing:
         await seed_site_knowledge_from_entries(
@@ -47,16 +55,13 @@ async def seed_demo_site(db: AsyncSession, settings) -> None:
         summary_model=settings.google_summary_model,
         text_fallback_model=settings.google_text_model,
         realtime_model=settings.google_realtime_model,
-        vad_preset={
-            'disabled': False,
-            'startOfSpeechSensitivity': 'START_SENSITIVITY_LOW',
-            'endOfSpeechSensitivity': 'END_SENSITIVITY_LOW',
-            'prefixPaddingMs': 80,
-            'silenceDurationMs': 600,
-        },
-        enabled_adapters=['faq_search', 'create_support_ticket'],
+        vad_preset={},
+        enabled_adapters=[],
+        site_config={},
         google_api_key_encrypted=encrypt_secret(settings.default_google_api_key) if settings.default_google_api_key else None,
     )
+    apply_config_to_site(demo_site, seed_config)
+    demo_site.max_session_duration_seconds = clamp_session_duration(demo_site.max_session_duration_seconds)
     db.add(demo_site)
     await db.flush()
     db.add_all(
@@ -73,8 +78,61 @@ async def seed_demo_site(db: AsyncSession, settings) -> None:
     )
 
 
+async def prune_stale_sessions(db: AsyncSession, *, site_id: str | None = None) -> int:
+    now = datetime.now(timezone.utc)
+    ended_before = now - timedelta(minutes=15)
+    conditions = [
+        or_(
+            VoiceSession.expires_at <= now,
+            and_(
+                VoiceSession.status.in_(['completed', 'closed', 'error', 'fallback_text']),
+                VoiceSession.updated_at <= ended_before,
+            ),
+        )
+    ]
+    if site_id:
+        conditions.append(VoiceSession.site_id == site_id)
+    result = await db.execute(delete(VoiceSession).where(and_(*conditions)))
+    await db.commit()
+    return int(result.rowcount or 0)
+
+
 def load_seed_faq_entries() -> list[dict]:
     return json.loads(FAQ_PATH.read_text())
+
+
+async def update_site_settings(db: AsyncSession, site: Site, payload: UpdateSiteSettingsRequest) -> Site:
+    apply_config_to_site(site, payload)
+    site.max_session_duration_seconds = clamp_session_duration(site.max_session_duration_seconds)
+    await db.commit()
+    await db.refresh(site)
+    return site
+
+
+async def import_site_settings(db: AsyncSession, site: Site | None, payload: ImportSiteSettingsRequest) -> Site:
+    target = site or Site(
+        id=payload.site_id,
+        display_name=payload.display_name,
+        allowed_origins=payload.allowed_origins,
+        max_session_duration_seconds=payload.limits.max_session_duration_seconds,
+        max_concurrent_sessions=payload.limits.max_concurrent_sessions,
+        daily_session_limit=payload.limits.daily_session_limit,
+        monthly_usage_budget=payload.limits.monthly_usage_budget,
+        summary_model=payload.models.summary_model,
+        text_fallback_model=payload.models.text_fallback_model,
+        realtime_model=payload.models.realtime_model,
+        vad_preset={},
+        enabled_adapters=[],
+        site_config={},
+    )
+    apply_config_to_site(target, payload)
+    target.max_session_duration_seconds = clamp_session_duration(target.max_session_duration_seconds)
+    if site is None:
+        db.add(target)
+        await db.flush()
+    await db.commit()
+    await db.refresh(target)
+    return target
 
 
 async def get_site(db: AsyncSession, site_id: str) -> Site | None:
@@ -126,6 +184,7 @@ async def seed_site_knowledge_from_entries(db: AsyncSession, *, site_id: str, en
 
 
 async def get_active_session_count(db: AsyncSession, site_id: str) -> int:
+    await prune_stale_sessions(db, site_id=site_id)
     now = datetime.now(timezone.utc)
     result = await db.scalar(
         select(func.count()).select_from(VoiceSession).where(

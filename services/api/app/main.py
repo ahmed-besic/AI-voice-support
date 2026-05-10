@@ -26,12 +26,15 @@ from .repository import (
     get_monthly_estimated_cost,
     get_recent_transcript_text,
     get_site,
+    import_site_settings,
     list_knowledge_entries,
     list_recent_sessions,
     list_site_summaries,
     mark_session_state,
+    prune_stale_sessions,
     replace_site_knowledge,
     seed_demo_site,
+    update_site_settings,
     upsert_session_memory,
 )
 from .schemas import (
@@ -53,10 +56,23 @@ from .schemas import (
     VoiceSessionBootstrap,
     VADConfig,
     WidgetEvent,
+    WidgetPublicConfig,
     WidgetSessionConfig,
     WidgetSessionUI,
 )
 from .security import AuthError, create_session_jwt, decrypt_secret, validate_origin, verify_session_jwt
+from .site_settings import (
+    ImportSiteSettingsRequest,
+    SiteBehaviorSettings,
+    SiteConfigFile,
+    SiteSettingsResponse,
+    UpdateSiteSettingsRequest,
+    build_api_key_status,
+    export_site_config_json,
+    load_site_config_file,
+    site_to_config_file,
+    site_to_settings_response,
+)
 
 settings = get_settings()
 app = FastAPI(title='Voice Support API', version='0.1.0')
@@ -67,6 +83,7 @@ async def startup() -> None:
     await init_db()
     async for db in get_db_session():
         await seed_demo_site(db, settings)
+        await prune_stale_sessions(db)
         break
 
 
@@ -84,7 +101,8 @@ async def is_origin_known(origin: str | None) -> bool:
 async def dynamic_cors(request: Request, call_next):
     origin = request.headers.get('origin')
     known_origin = await is_origin_known(origin)
-    if request.method == 'OPTIONS' and request.url.path.startswith('/widget/'):
+    is_cors_managed_path = request.url.path.startswith('/widget/') or request.url.path.startswith('/admin/')
+    if request.method == 'OPTIONS' and is_cors_managed_path:
         response = Response(status_code=204)
     else:
         response = await call_next(request)
@@ -92,13 +110,39 @@ async def dynamic_cors(request: Request, call_next):
         response.headers['Access-Control-Allow-Origin'] = origin
         response.headers['Access-Control-Allow-Credentials'] = 'true'
         response.headers['Access-Control-Allow-Headers'] = 'Authorization, Content-Type, Origin'
-        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, OPTIONS'
         response.headers['Vary'] = 'Origin'
     return response
 
 
 def get_vad_config(site) -> VADConfig:
     return VADConfig(**site.vad_preset)
+
+
+def get_site_behavior_settings(site: Site) -> SiteBehaviorSettings:
+    return SiteBehaviorSettings.model_validate((site.site_config or {}).get('behavior', {}))
+
+
+def get_site_widget_settings(site: Site) -> dict:
+    return (site.site_config or {}).get('widget', {})
+
+
+def build_widget_public_config(site: Site) -> WidgetPublicConfig:
+    widget_settings = get_site_widget_settings(site)
+    behavior_settings = get_site_behavior_settings(site)
+    return WidgetPublicConfig(
+        defaultMode=widget_settings.get('defaultMode', 'voice'),
+        voiceEnabled=bool(widget_settings.get('voiceEnabled', True)),
+        textEnabled=bool(widget_settings.get('textEnabled', True)),
+        theme=widget_settings.get('theme', 'graphite'),
+        strictBehaviorEnabled=behavior_settings.strict_behavior_enabled,
+        vadConfig=get_vad_config(site),
+        ui=WidgetSessionUI(
+            title=widget_settings.get('title', 'Support assistant'),
+            welcomeMessage=widget_settings.get('welcomeMessage', 'How can I help you today?'),
+            countdownWarningSeconds=widget_settings.get('countdownWarningSeconds', 60),
+        ),
+    )
 
 
 async def require_site_and_origin(
@@ -153,16 +197,32 @@ async def widget_bootstrap(
 ) -> WidgetSessionConfig:
     site, origin = await require_site_and_origin(request, bootstrap, db)
     policy = get_policy()
+    widget_settings = get_site_widget_settings(site)
+    behavior_settings = get_site_behavior_settings(site)
     allowed_adapter_names = filter_allowed_tools(site.enabled_adapters, policy)
-    if await get_active_session_count(db, site.id) >= site.max_concurrent_sessions:
+    api_key = decrypt_secret(site.google_api_key_encrypted) or settings.default_google_api_key
+    default_mode = widget_settings.get('defaultMode', 'voice')
+    voice_enabled = bool(widget_settings.get('voiceEnabled', True))
+    text_enabled = bool(widget_settings.get('textEnabled', True))
+    if not voice_enabled and not text_enabled:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail='Both voice and text modes are disabled for this site')
+
+    requested_mode = bootstrap.requested_mode
+    if requested_mode == 'voice' and not voice_enabled:
+        if not text_enabled:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Voice mode is disabled for this site')
+        requested_mode = 'text'
+    if requested_mode == 'text' and not text_enabled:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Text mode is disabled for this site')
+
+    if requested_mode == 'voice' and await get_active_session_count(db, site.id) >= site.max_concurrent_sessions:
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail='Concurrent session limit reached')
     if await get_daily_session_count(db, site.id) >= site.daily_session_limit:
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail='Daily session limit reached')
     if await get_monthly_estimated_cost(db, site.id) >= site.monthly_usage_budget:
         raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail='Monthly budget reached')
 
-    api_key = decrypt_secret(site.google_api_key_encrypted) or settings.default_google_api_key
-    if bootstrap.requested_mode == 'text':
+    if requested_mode == 'text':
         ephemeral_token = 'text-only-session'
     elif not api_key:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail='No Google API key is configured for this site')
@@ -177,6 +237,7 @@ async def widget_bootstrap(
                 company_name=site.display_name,
                 policy=policy,
                 allowed_tools=allowed_adapter_names,
+                behavior=behavior_settings,
             ),
         )
 
@@ -184,7 +245,7 @@ async def widget_bootstrap(
         db,
         site=site,
         origin=origin,
-        mode=bootstrap.requested_mode,
+        mode=requested_mode,
         customer_identity=bootstrap.customer.model_dump() if bootstrap.customer else None,
     )
     session_jwt = create_session_jwt(
@@ -201,13 +262,37 @@ async def widget_bootstrap(
         maxSessionDurationSeconds=site.max_session_duration_seconds,
         enabledTools=registry.list_tool_descriptors(allowed_adapter_names),
         textFallbackModel=site.text_fallback_model,
-        textFallbackEnabled=True,
+        textFallbackEnabled=text_enabled,
+        defaultMode=default_mode,
+        voiceEnabled=voice_enabled,
+        textEnabled=text_enabled,
+        theme=widget_settings.get('theme', 'graphite'),
         vadConfig=get_vad_config(site),
-        strictBehaviorEnabled=True,
+        strictBehaviorEnabled=behavior_settings.strict_behavior_enabled,
         controlStreamUrl=build_control_stream_url(request, session_id=session.id, session_jwt=session_jwt),
         strikePolicy={'maxStrikes': policy.max_strikes, 'ambiguousAction': policy.ambiguous.action},
-        ui=WidgetSessionUI(title='Support assistant', welcomeMessage='How can I help you today?', countdownWarningSeconds=60),
+        ui=WidgetSessionUI(
+            title=widget_settings.get('title', 'Support assistant'),
+            welcomeMessage=widget_settings.get('welcomeMessage', 'How can I help you today?'),
+            countdownWarningSeconds=widget_settings.get('countdownWarningSeconds', 60),
+        ),
     )
+
+
+@app.get('/widget/sites/{site_id}/settings', response_model=WidgetPublicConfig)
+async def widget_public_settings(
+    site_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+) -> WidgetPublicConfig:
+    site = await get_site(db, site_id)
+    if not site:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Unknown site')
+    try:
+        validate_origin(request.headers.get('origin'), site.allowed_origins)
+    except AuthError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    return build_widget_public_config(site)
 
 
 @app.post('/widget/tools/execute', response_model=ToolExecutionResponse)
@@ -268,6 +353,9 @@ async def ingest_user_turn(
     site = await get_site(db, session_claims['site_id'])
     if not site:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Unknown site')
+    behavior_settings = get_site_behavior_settings(site)
+    if not behavior_settings.strict_behavior_enabled:
+        return UserTurnResponse(accepted=True, currentStrikeCount=0, terminated=False)
     api_key = decrypt_secret(site.google_api_key_encrypted) or settings.default_google_api_key
     if not api_key:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail='No Google API key configured')
@@ -371,46 +459,72 @@ async def text_turn(
     site = await get_site(db, session_claims['site_id'])
     if not site:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Unknown site')
+    widget_settings = get_site_widget_settings(site)
+    behavior_settings = get_site_behavior_settings(site)
+    if not bool(widget_settings.get('textEnabled', True)):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Text mode is disabled for this site')
     policy = get_policy()
     api_key = decrypt_secret(site.google_api_key_encrypted) or settings.default_google_api_key
     if not api_key:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail='No Google API key configured')
-    moderation_state = await get_moderation_state(db, payload.session_id)
-    if moderation_state and moderation_state.terminated:
-        policy_event = PolicyControlEvent(
-            type='policy_terminated',
-            message=policy.termination_message,
-            currentStrikeCount=moderation_state.strike_count,
-            maxStrikes=policy.max_strikes,
-            terminated=True,
-            classification=moderation_state.last_decision,
-            reasonCode=moderation_state.last_reason_code,
-            reviewTag=moderation_state.last_review_tag,
-        )
-        return TextTurnResponse(
-            sessionId=payload.session_id,
-            text=policy.termination_message,
-            currentStrikeCount=moderation_state.strike_count,
-            terminated=True,
-            policyEvent=policy_event,
-        )
+    policy_event = None
+    current_strike_count = 0
+    terminated = False
 
-    moderation_result = await moderate_user_turn(
-        db,
-        session_id=payload.session_id,
-        source='text_input',
-        sequence=int(asyncio.get_running_loop().time() * 1000),
-        text=payload.text,
-        company_name=site.display_name,
-        model=site.text_fallback_model,
-        api_key=api_key,
-        policy=policy,
-    )
+    if behavior_settings.strict_behavior_enabled:
+        moderation_state = await get_moderation_state(db, payload.session_id)
+        if moderation_state and moderation_state.terminated:
+            policy_event = PolicyControlEvent(
+                type='policy_terminated',
+                message=policy.termination_message,
+                currentStrikeCount=moderation_state.strike_count,
+                maxStrikes=policy.max_strikes,
+                terminated=True,
+                classification=moderation_state.last_decision,
+                reasonCode=moderation_state.last_reason_code,
+                reviewTag=moderation_state.last_review_tag,
+            )
+            return TextTurnResponse(
+                sessionId=payload.session_id,
+                text=policy.termination_message,
+                currentStrikeCount=moderation_state.strike_count,
+                terminated=True,
+                policyEvent=policy_event,
+            )
 
-    if moderation_result.classification == ScopeDecision.OUT_OF_SCOPE.value:
-        response_text = policy.refusal_message
-    elif moderation_result.classification == ScopeDecision.AMBIGUOUS.value and policy.ambiguous.action == 'count_strike':
-        response_text = policy.refusal_message
+        moderation_result = await moderate_user_turn(
+            db,
+            session_id=payload.session_id,
+            source='text_input',
+            sequence=int(asyncio.get_running_loop().time() * 1000),
+            text=payload.text,
+            company_name=site.display_name,
+            model=site.text_fallback_model,
+            api_key=api_key,
+            policy=policy,
+        )
+        policy_event = moderation_result.policy_event
+        current_strike_count = moderation_result.current_strike_count
+        terminated = moderation_result.terminated
+
+        if moderation_result.classification == ScopeDecision.OUT_OF_SCOPE.value:
+            response_text = policy.refusal_message
+        elif moderation_result.classification == ScopeDecision.AMBIGUOUS.value and policy.ambiguous.action == 'count_strike':
+            response_text = policy.refusal_message
+        else:
+            faq_hits = await registry.faq_adapter().search(payload.text, site.id)
+            transcript = await get_recent_transcript_text(db, payload.session_id)
+            context = '\n'.join(f"- {hit['title']}: {hit['content']}" for hit in faq_hits) or '- No FAQ results available.'
+            response_text = await generate_text_response(
+                api_key=api_key,
+                model=site.text_fallback_model,
+                system_instruction=build_text_system_instruction(
+                    company_name=site.display_name,
+                    policy=policy,
+                    behavior=behavior_settings,
+                ),
+                prompt=f'Conversation so far:\n{transcript}\n\nFAQ context:\n{context}\n\nUser message:\n{payload.text}',
+            )
     else:
         faq_hits = await registry.faq_adapter().search(payload.text, site.id)
         transcript = await get_recent_transcript_text(db, payload.session_id)
@@ -418,7 +532,11 @@ async def text_turn(
         response_text = await generate_text_response(
             api_key=api_key,
             model=site.text_fallback_model,
-            system_instruction=build_text_system_instruction(company_name=site.display_name, policy=policy),
+            system_instruction=build_text_system_instruction(
+                company_name=site.display_name,
+                policy=policy,
+                behavior=behavior_settings,
+            ),
             prompt=f'Conversation so far:\n{transcript}\n\nFAQ context:\n{context}\n\nUser message:\n{payload.text}',
         )
     await add_transcript_event(
@@ -435,9 +553,9 @@ async def text_turn(
     return TextTurnResponse(
         sessionId=payload.session_id,
         text=response_text,
-        currentStrikeCount=moderation_result.current_strike_count,
-        terminated=moderation_result.terminated,
-        policyEvent=moderation_result.policy_event,
+        currentStrikeCount=current_strike_count,
+        terminated=terminated,
+        policyEvent=policy_event,
     )
 
 
@@ -457,6 +575,46 @@ async def admin_sites(db: AsyncSession = Depends(get_db_session)) -> list[SiteSu
             )
         )
     return response
+
+
+@app.get('/admin/site/settings', response_model=SiteSettingsResponse)
+async def admin_site_settings(db: AsyncSession = Depends(get_db_session)) -> SiteSettingsResponse:
+    site = await get_site(db, settings.demo_site_id)
+    if not site:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Unknown site')
+    return site_to_settings_response(site, settings)
+
+
+@app.put('/admin/site/settings', response_model=SiteSettingsResponse)
+async def admin_update_site_settings(
+    payload: UpdateSiteSettingsRequest,
+    db: AsyncSession = Depends(get_db_session),
+) -> SiteSettingsResponse:
+    site = await get_site(db, settings.demo_site_id)
+    if not site:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Unknown site')
+    site = await update_site_settings(db, site, payload)
+    return site_to_settings_response(site, settings)
+
+
+@app.get('/admin/site/settings/export', response_model=SiteConfigFile)
+async def admin_export_site_settings(db: AsyncSession = Depends(get_db_session)) -> SiteConfigFile:
+    site = await get_site(db, settings.demo_site_id)
+    if not site:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Unknown site')
+    return site_to_config_file(site)
+
+
+@app.post('/admin/site/settings/import', response_model=SiteSettingsResponse)
+async def admin_import_site_settings(
+    payload: ImportSiteSettingsRequest,
+    db: AsyncSession = Depends(get_db_session),
+) -> SiteSettingsResponse:
+    if payload.site_id != settings.demo_site_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Imported siteId must match the configured default site')
+    site = await get_site(db, settings.demo_site_id)
+    imported = await import_site_settings(db, site, payload)
+    return site_to_settings_response(imported, settings)
 
 
 @app.get('/admin/sites/{site_id}/knowledge', response_model=list[KnowledgeEntryResponse])

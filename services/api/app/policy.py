@@ -8,6 +8,7 @@ import yaml
 from pydantic import BaseModel, Field
 
 from .config import Settings, get_settings
+from .site_settings import SiteBehaviorSettings, RefusalTone
 
 
 class AmbiguousHandlingPolicy(BaseModel):
@@ -79,16 +80,22 @@ def build_live_system_instruction(
     company_name: str,
     policy: StrictBehaviorPolicy,
     allowed_tools: list[str],
+    behavior: SiteBehaviorSettings | None = None,
 ) -> str:
-    supported_topics = '\n'.join(f'- {topic}' for topic in policy.supported_topics) or '- No supported topics configured.'
-    forbidden_topics = '\n'.join(f'- {topic}' for topic in policy.forbidden_topics) or '- No forbidden topics configured.'
+    resolved_behavior = behavior or SiteBehaviorSettings()
+    supported_topics = '\n'.join(f'- {topic}' for topic in (resolved_behavior.supported_topics or policy.supported_topics)) or '- No supported topics configured.'
+    forbidden_topics = '\n'.join(f'- {topic}' for topic in (resolved_behavior.forbidden_topics or policy.forbidden_topics)) or '- No forbidden topics configured.'
     tools = '\n'.join(f'- {tool}' for tool in allowed_tools) or '- No tools are allowed.'
     extra = f'\nAdditional guidance:\n{policy.voice_prompt_addition.strip()}' if policy.voice_prompt_addition.strip() else ''
+    custom_instructions = resolved_behavior.custom_instructions.strip()
+    if custom_instructions:
+        extra += f'\nSite custom instructions:\n{custom_instructions}'
     return (
         f'You are the voice support assistant for {company_name}.\n'
         'Only help with company support topics.\n'
         'If the user asks for general trivia, unrelated conversation, or anything outside company support, refuse briefly.\n'
         f'Use this refusal style exactly in spirit: {policy.refusal_message}\n'
+        f'Refusal tone: {_describe_refusal_tone(resolved_behavior.refusal_tone)}.\n'
         'Never answer unrelated trivia even if you know it.\n'
         'Do not invent policies or product details.\n'
         'Supported topics:\n'
@@ -101,17 +108,29 @@ def build_live_system_instruction(
     )
 
 
-def build_text_system_instruction(*, company_name: str, policy: StrictBehaviorPolicy) -> str:
+def build_text_system_instruction(
+    *,
+    company_name: str,
+    policy: StrictBehaviorPolicy,
+    behavior: SiteBehaviorSettings | None = None,
+) -> str:
+    resolved_behavior = behavior or SiteBehaviorSettings()
     extra = f'\nAdditional guidance:\n{policy.text_prompt_addition.strip()}' if policy.text_prompt_addition.strip() else ''
-    supported_topics = '\n'.join(f'- {topic}' for topic in policy.supported_topics) or '- No supported topics configured.'
+    if resolved_behavior.custom_instructions.strip():
+        extra += f'\nSite custom instructions:\n{resolved_behavior.custom_instructions.strip()}'
+    supported_topics = '\n'.join(f'- {topic}' for topic in (resolved_behavior.supported_topics or policy.supported_topics)) or '- No supported topics configured.'
+    forbidden_topics = '\n'.join(f'- {topic}' for topic in (resolved_behavior.forbidden_topics or policy.forbidden_topics)) or '- No forbidden topics configured.'
     return (
         f'You are a concise customer support assistant for {company_name}.\n'
         'Answer only within company support scope.\n'
         'Use provided knowledge context when relevant.\n'
         f'If the user is out of scope, refuse briefly using this style: {policy.refusal_message}\n'
+        f'Refusal tone: {_describe_refusal_tone(resolved_behavior.refusal_tone)}.\n'
         'If you do not know, say so plainly.\n'
         'Supported topics:\n'
-        f'{supported_topics}'
+        f'{supported_topics}\n'
+        'Out-of-scope topics:\n'
+        f'{forbidden_topics}'
         f'{extra}'
     )
 
@@ -121,3 +140,11 @@ def filter_allowed_tools(enabled_tools: list[str], policy: StrictBehaviorPolicy)
         return list(enabled_tools)
     allowed = set(policy.allowed_tools)
     return [tool for tool in enabled_tools if tool in allowed]
+
+
+def _describe_refusal_tone(refusal_tone: RefusalTone) -> str:
+    if refusal_tone == 'firm':
+        return 'firm, direct, and professional'
+    if refusal_tone == 'brief':
+        return 'very brief and minimal'
+    return 'polite, calm, and redirecting'
